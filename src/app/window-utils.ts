@@ -154,7 +154,7 @@ export const preventWindowNavigation = (
         }
       }
 
-      windowHandler.execCmd(windowHandler.screenShareIndicatorFrameUtil, []);
+      windowHandler.closeScreenSharingIndicator();
     }
 
     if (
@@ -773,7 +773,7 @@ export const reloadWindow = (browserWindow: ICustomBrowserWindow) => {
 
     windowHandler.closeAllWindows();
 
-    windowHandler.execCmd(windowHandler.screenShareIndicatorFrameUtil, []);
+    windowHandler.closeScreenSharingIndicator();
 
     return;
   }
@@ -1266,25 +1266,33 @@ export const loadBrowserViews = async (
       ) {
         return;
       }
-      mainWindow.addBrowserView(titleBarView);
-      const winBounds: Rectangle = mainWindow.getBounds();
-      const currentScreenBounds: Rectangle = screen.getDisplayMatching({
-        ...winBounds,
-      }).workArea;
-      titleBarView.setBounds({
-        width: currentScreenBounds.width,
-        height: TITLE_BAR_HEIGHT,
-        x: 0,
-        y: 0,
-      });
-      if (!mainView || !viewExists(mainView)) {
-        return;
+      let width: number;
+      let height: number;
+      if (mainWindow.isMaximized()) {
+        const winBounds: Rectangle = mainWindow.getBounds();
+        const currentScreenBounds: Rectangle = screen.getDisplayMatching({
+          ...winBounds,
+        }).workArea;
+        width = currentScreenBounds.width;
+        height = currentScreenBounds.height;
+      } else {
+        [width, height] = mainWindow.getSize();
       }
+      mainWindow.addBrowserView(titleBarView);
+      const titleBarViewBounds = titleBarView.getBounds();
+      titleBarView.setBounds({
+        ...titleBarViewBounds,
+        ...{
+          width,
+        },
+      });
+      const mainViewBounds = mainView.getBounds();
       mainView.setBounds({
-        width: currentScreenBounds.width,
-        height: currentScreenBounds.height - TITLE_BAR_HEIGHT,
-        x: 0,
-        y: TITLE_BAR_HEIGHT,
+        ...mainViewBounds,
+        ...{
+          y: TITLE_BAR_HEIGHT,
+          height: height - TITLE_BAR_HEIGHT,
+        },
       });
       // Workaround as electron does not resize devtools automatically
       if (mainView.webContents.isDevToolsOpened()) {
@@ -1365,35 +1373,12 @@ export const loadBrowserViews = async (
     y: TITLE_BAR_HEIGHT,
   });
   mainView.setAutoResize({
-    horizontal: true,
-    vertical: false,
     width: true,
-    height: false,
-  });
-
-  // Workaround to fix the auto resize of the main view container height
-  mainWindow.on('resize', () => {
-    if (
-      !mainView ||
-      mainView.webContents.isDestroyed() ||
-      !mainWindow ||
-      !windowExists(mainWindow)
-    ) {
-      return;
-    }
-    const bounds = mainView.getBounds();
-    const [, height] = mainWindow.getSize();
-    mainView.setBounds({
-      ...bounds,
-      ...{
-        y: mainWindow.isFullScreen() ? 0 : TITLE_BAR_HEIGHT,
-        height: mainWindow.isFullScreen() ? height : height - TITLE_BAR_HEIGHT,
-      },
-    });
+    height: true,
   });
 
   windowHandler.setMainView(mainView);
-  windowHandler.setTitleBarView(mainView);
+  windowHandler.setTitleBarView(titleBarView);
 
   return mainView.webContents;
 };

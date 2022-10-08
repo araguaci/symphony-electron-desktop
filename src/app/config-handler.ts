@@ -57,6 +57,7 @@ export interface IConfig {
   locale?: string;
   installVariant?: string;
   bootCount?: number;
+  startedAfterAutoUpdate?: boolean;
 }
 
 export interface IGlobalConfig {
@@ -144,6 +145,7 @@ class Config {
   private bootCount: number | undefined;
   private readonly configFileName: string;
   private readonly installVariantFilename: string;
+  private readonly tempGlobalConfigFilePath: string;
   private readonly installVariantPath: string;
   private readonly userConfigPath: string;
   private readonly appPath: string;
@@ -152,6 +154,10 @@ class Config {
 
   constructor() {
     this.configFileName = 'Symphony.config';
+    this.tempGlobalConfigFilePath = path.join(
+      app.getPath('userData'),
+      'temp-local.Symphony.config',
+    );
     this.installVariantFilename = 'InstallVariant.info';
     this.userConfigPath = path.join(
       app.getPath('userData'),
@@ -205,12 +211,9 @@ class Config {
     this.cloudConfig = {};
     this.filteredCloudConfig = {};
 
-    this.readUserConfig();
     this.readGlobalConfig();
     this.readInstallVariant();
     this.readCloudConfig();
-
-    this.checkFirstTimeLaunch();
   }
 
   /**
@@ -399,6 +402,7 @@ class Config {
       filteredFields.buildNumber = buildNumber;
       filteredFields.installVariant = this.installVariant;
       filteredFields.bootCount = 0;
+      filteredFields.startedAfterAutoUpdate = false;
       logger.info(
         `config-handler: setting first time launch for build`,
         buildNumber,
@@ -410,6 +414,7 @@ class Config {
       buildNumber,
       installVariant: this.installVariant,
       bootCount: this.bootCount,
+      startedAfterAutoUpdate: false,
     });
   }
 
@@ -522,6 +527,117 @@ class Config {
   }
 
   /**
+   * Creates the user config file with default values if not exists
+   */
+  public async initializeUserConfig(): Promise<void> {
+    if (!fs.existsSync(this.userConfigPath)) {
+      // Need to wait until app ready event to access user data
+      await app.whenReady();
+      await this.readGlobalConfig();
+      logger.info(
+        `config-handler: user config doesn't exist! will create new one and update config`,
+      );
+      const { url, ...rest } = this.globalConfig as IConfig;
+      await this.updateUserConfig({
+        configVersion: app.getVersion().toString(),
+        buildNumber,
+        ...rest,
+      } as IConfig);
+    }
+  }
+
+  /**
+   * Reads a stores the user config file
+   *
+   * If user config doesn't exits?
+   * this creates a new one with { configVersion: current_app_version, buildNumber: current_app_build_number }
+   */
+  public async readUserConfig() {
+    if (fs.existsSync(this.userConfigPath)) {
+      const userConfig = fs.readFileSync(this.userConfigPath, 'utf8');
+      this.userConfig = this.parseConfigData(userConfig);
+    }
+    logger.info(`config-handler: User configuration: `, this.userConfig);
+  }
+
+  /**
+   * Verifies if the application is launched for the first time
+   */
+  public async checkFirstTimeLaunch() {
+    logger.info('config-handler: checking first time launch');
+    const installVariant =
+      (this.userConfig && (this.userConfig as IConfig).installVariant) || null;
+
+    if (!installVariant) {
+      logger.info(
+        `config-handler: there's no install variant found, this is a first time launch`,
+      );
+      this.isFirstTime = true;
+      this.bootCount = 0;
+      return;
+    }
+
+    if (
+      this.userConfig &&
+      (this.userConfig as IConfig).startedAfterAutoUpdate
+    ) {
+      // Update config as usual
+      await this.setUpFirstTimeLaunch();
+      // Skip welcome screen
+      this.isFirstTime = false;
+      return;
+    }
+
+    if (
+      installVariant &&
+      typeof installVariant === 'string' &&
+      installVariant !== this.installVariant
+    ) {
+      logger.info(
+        `config-handler: install variant found is of a different instance, this is a first time launch`,
+      );
+      this.isFirstTime = true;
+      this.bootCount = 0;
+      return;
+    }
+    logger.info(
+      `config-handler: install variant is the same as the existing one, not a first time launch`,
+    );
+    this.isFirstTime = false;
+    this.bootCount = (this.getConfigFields(['bootCount']) as IConfig).bootCount;
+    if (this.bootCount !== undefined) {
+      this.bootCount++;
+      await this.updateUserConfig({ bootCount: this.bootCount });
+    } else {
+      await this.updateUserConfig({ bootCount: 0 });
+    }
+  }
+
+  /**
+   * Creates a backup of the global config file
+   */
+  public backupGlobalConfig() {
+    fs.copyFileSync(this.globalConfigPath, this.tempGlobalConfigFilePath);
+  }
+
+  /**
+   * Overwrites the global config file with the backed up config file
+   */
+  public copyGlobalConfig() {
+    try {
+      if (fs.existsSync(this.tempGlobalConfigFilePath)) {
+        fs.copyFileSync(this.tempGlobalConfigFilePath, this.globalConfigPath);
+        fs.unlinkSync(this.tempGlobalConfigFilePath);
+      }
+    } catch (e) {
+      logger.error(
+        `config-handler: unable to backup global config file error: `,
+        e,
+      );
+    }
+  }
+
+  /**
    * filters out the cloud config
    */
   private filterCloudConfig(): void {
@@ -583,34 +699,6 @@ class Config {
   }
 
   /**
-   * Reads a stores the user config file
-   *
-   * If user config doesn't exits?
-   * this creates a new one with { configVersion: current_app_version, buildNumber: current_app_build_number }
-   */
-  private async readUserConfig() {
-    if (!fs.existsSync(this.userConfigPath)) {
-      // Need to wait until app ready event to access user data
-      await app.whenReady();
-      await this.readGlobalConfig();
-      logger.info(
-        `config-handler: user config doesn't exist! will create new one and update config`,
-      );
-      const { url, ...rest } = this.globalConfig as IConfig;
-      await this.updateUserConfig({
-        configVersion: app.getVersion().toString(),
-        buildNumber,
-        ...rest,
-      } as IConfig);
-    }
-    if (fs.existsSync(this.userConfigPath)) {
-      const userConfig = fs.readFileSync(this.userConfigPath, 'utf8');
-      this.userConfig = this.parseConfigData(userConfig);
-    }
-    logger.info(`config-handler: User configuration: `, this.userConfig);
-  }
-
-  /**
    * Reads a stores the global config file
    */
   private readGlobalConfig() {
@@ -618,6 +706,20 @@ class Config {
       throw new Error(
         `Global config file missing! App will not run as expected!`,
       );
+    }
+    if (fs.existsSync(this.tempGlobalConfigFilePath)) {
+      this.globalConfig = this.parseConfigData(
+        fs.readFileSync(this.tempGlobalConfigFilePath, 'utf8'),
+      );
+      logger.info(
+        `config-handler: temp global config exists using this file: `,
+        this.tempGlobalConfigFilePath,
+        this.globalConfig,
+      );
+      if (isMac) {
+        this.copyGlobalConfig();
+      }
+      return;
     }
     this.globalConfig = this.parseConfigData(
       fs.readFileSync(this.globalConfigPath, 'utf8'),
@@ -655,48 +757,6 @@ class Config {
     // recalculate cloud config when we the application starts
     this.filterCloudConfig();
     logger.info(`config-handler: Cloud configuration: `, this.userConfig);
-  }
-
-  /**
-   * Verifies if the application is launched for the first time
-   */
-  private async checkFirstTimeLaunch() {
-    logger.info('config-handler: checking first time launch');
-    const installVariant =
-      (this.userConfig && (this.userConfig as IConfig).installVariant) || null;
-
-    if (!installVariant) {
-      logger.info(
-        `config-handler: there's no install variant found, this is a first time launch`,
-      );
-      this.isFirstTime = true;
-      this.bootCount = 0;
-      return;
-    }
-
-    if (
-      installVariant &&
-      typeof installVariant === 'string' &&
-      installVariant !== this.installVariant
-    ) {
-      logger.info(
-        `config-handler: install variant found is of a different instance, this is a first time launch`,
-      );
-      this.isFirstTime = true;
-      this.bootCount = 0;
-      return;
-    }
-    logger.info(
-      `config-handler: install variant is the same as the existing one, not a first time launch`,
-    );
-    this.isFirstTime = false;
-    this.bootCount = (this.getConfigFields(['bootCount']) as IConfig).bootCount;
-    if (this.bootCount !== undefined) {
-      this.bootCount++;
-      await this.updateUserConfig({ bootCount: this.bootCount });
-    } else {
-      await this.updateUserConfig({ bootCount: 0 });
-    }
   }
 }
 
